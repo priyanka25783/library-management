@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Management System</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --text:#1f2430; --muted:#6b7280; --brand:#2f5bea; --danger:#d63a3a; --ok:#1f9d55; --line:#e3e6ee; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161c; --card:#1d2029; --text:#e8eaf0; --muted:#9aa1b1; --line:#2d3140; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--brand); color:#fff; padding:14px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  header h1 { margin:0; font-size:20px; }
+  main { max-width:1100px; margin:20px auto; padding:0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  input, textarea, select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; }
+  button { padding:8px 14px; border:0; border-radius:6px; background:var(--brand); color:#fff; cursor:pointer; font:inherit; }
+  button.sec { background:transparent; color:var(--brand); border:1px solid var(--brand); }
+  button.danger { background:var(--danger); } button.ok { background:var(--ok); }
+  button.sm { padding:4px 9px; font-size:13px; margin:1px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .wrap { overflow-x:auto; }
+  .muted { color:var(--muted); font-size:13px; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; color:#fff; background:var(--muted); }
+  .badge.on { background:var(--ok); }
+  .books { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px; }
+  .hide { display:none; }
+  #msg { position:fixed; bottom:16px; right:16px; background:var(--text); color:var(--bg); padding:10px 16px; border-radius:8px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📚 Library Management System</h1>
+  <div id="nav"></div>
+</header>
+<main id="app"></main>
+<div id="msg"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let token = sessionStorage.getItem('token');
+let view = token ? 'admin' : 'public';
+let tab = 'books';
+let cache = { books: [], students: [], issues: [] };
+
+function toast(m) { const e = $('#msg'); e.textContent = m; e.style.display = 'block'; setTimeout(() => e.style.display = 'none', 2800); }
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers);
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (opts.body && !(opts.body instanceof FormData)) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.body); }
+  const r = await fetch(path, opts);
+  if (r.status === 401 && path.startsWith('/api/admin')) { logout(true); throw new Error('Please log in again'); }
+  if (!r.ok) { let m = r.statusText; try { const j = await r.json(); m = j.message || j.error || m; } catch (e) {} throw new Error(m); }
+  const t = await r.text();
+  return t ? JSON.parse(t) : null;
+}
+async function run(fn) { try { await fn(); } catch (e) { toast(e.message); } }
+
+function nav() {
+  $('#nav').innerHTML = token
+    ? `<button class="sec" style="color:#fff;border-color:#fff" onclick="go('public')">Public site</button>
+       <button class="sec" style="color:#fff;border-color:#fff" onclick="go('admin')">Admin panel</button>
+       <button class="danger" onclick="logout()">Logout</button>`
+    : `<button class="sec" style="color:#fff;border-color:#fff" onclick="go('login')">Admin login</button>`;
+}
+function go(v) { view = v; render(); }
+
+async function render() {
+  nav();
+  if (view === 'login') return renderLogin();
+  if (view === 'admin' && token) return renderAdmin();
+  return renderPublic();
+}
+
+/* ---------- PUBLIC ---------- */
+async function renderPublic(q = '') {
+  $('#app').innerHTML = `<div class="card"><input id="q" placeholder="Search by title or author..." value="${esc(q)}"></div><div id="list" class="books"></div>`;
+  $('#q').oninput = e => run(() => loadPublic(e.target.value));
+  await run(() => loadPublic(q));
+}
+async function loadPublic(q) {
+  const list = await api('/api/books?q=' + encodeURIComponent(q));
+  $('#list').innerHTML = list.length ? list.map(b => `
+    <div class="card"><h3 style="margin:0 0 4px">${esc(b.title)}</h3>
+      <div class="muted">${esc(b.author)} · ${esc(b.category)}</div>
+      <p>${esc(b.description)}</p>
+      <div class="muted">ISBN: ${esc(b.isbn)} · Available: ${b.quantity}</div>
+      ${b.hasFile ? `<p><a href="/api/books/${b.id}/file" target="_blank"><button class="sm">Open / Download</button></a></p>` : ''}
+    </div>`).join('') : '<p class="muted">No published books yet.</p>';
+}
+
+/* ---------- LOGIN ---------- */
+function renderLogin() {
+  $('#app').innerHTML = `<div class="card" style="max-width:360px;margin:40px auto">
+    <h2>Admin Login</h2>
+    <p><input id="u" placeholder="Username"></p>
+    <p><input id="p" type="password" placeholder="Password"></p>
+    <button id="lb">Login</button></div>`;
+  const doLogin = () => run(async () => {
+    const r = await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } });
+    token = r.token; sessionStorage.setItem('token', token); view = 'admin'; render();
+  });
+  $('#lb').onclick = doLogin;
+  $('#p').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+}
+async function logout(silent) {
+  if (token && !silent) { try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {} }
+  token = null; sessionStorage.removeItem('token'); view = 'login'; render();
+}
+
+/* ---------- ADMIN ---------- */
+async function renderAdmin() {
+  $('#app').innerHTML = `<div class="tabs">
+    ${['books','students','issues'].map(t => `<button class="${tab===t?'':'sec'}" onclick="tab='${t}';renderAdmin()">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}
+  </div><div id="panel"></div>`;
+  await run(async () => {
+    if (tab === 'books') await booksPanel();
+    if (tab === 'students') await studentsPanel();
+    if (tab === 'issues') await issuesPanel();
+  });
+}
+
+/* Books */
+async function booksPanel() {
+  cache.books = await api('/api/admin/books');
+  $('#panel').innerHTML = `
+  <div class="card"><h3 id="bt">Add book</h3><input type="hidden" id="bid">
+    <div class="grid">
+      <input id="title" placeholder="Title"><input id="author" placeholder="Author">
+      <input id="isbn" placeholder="ISBN"><input id="category" placeholder="Category">
+      <input id="quantity" type="number" min="0" placeholder="Copies">
+    </div>
+    <p><textarea id="description" rows="2" placeholder="Description"></textarea></p>
+    <button onclick="saveBook()">Save</button> <button class="sec" onclick="booksPanel()">Clear</button>
+  </div>
+  <div class="card wrap"><table><tr><th>Title</th><th>Author</th><th>Category</th><th>Copies</th><th>Status</th><th>File</th><th>Actions</th></tr>
+  ${cache.books.map(b => `<tr>
+    <td>${esc(b.title)}</td><td>${esc(b.author)}</td><td>${esc(b.category)}</td><td>${b.quantity}</td>
+    <td><span class="badge ${b.published?'on':''}">${b.published?'Published':'Draft'}</span></td>
+    <td>${b.hasFile ? `<a href="#" onclick="openFile(${b.id});return false">View</a> · ` : ''}
+        <label style="cursor:pointer;color:var(--brand)">Upload<input type="file" class="hide" onchange="uploadFile(${b.id},this)"></label></td>
+    <td><button class="sm sec" onclick="editBook(${b.id})">Edit</button>
+        <button class="sm ${b.published?'sec':'ok'}" onclick="publish(${b.id},${!b.published})">${b.published?'Unpublish':'Publish'}</button>
+        <button class="sm danger" onclick="delBook(${b.id})">Delete</button></td></tr>`).join('')}
+  </table></div>`;
+}
+function editBook(id) {
+  const b = cache.books.find(x => x.id === id);
+  $('#bt').textContent = 'Edit book'; $('#bid').value = b.id;
+  ['title','author','isbn','category','quantity','description'].forEach(k => $('#'+k).value = b[k] ?? '');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+const saveBook = () => run(async () => {
+  const body = {}; ['title','author','isbn','category','description'].forEach(k => body[k] = $('#'+k).value);
+  body.quantity = parseInt($('#quantity').value || '0', 10);
+  if (!body.title.trim()) throw new Error('Title is required');
+  const id = $('#bid').value;
+  await api(id ? '/api/admin/books/' + id : '/api/admin/books', { method: id ? 'PUT' : 'POST', body });
+  toast('Saved'); booksPanel();
+});
+const publish = (id, v) => run(async () => { await api(`/api/admin/books/${id}/publish?value=${v}`, { method: 'POST' }); booksPanel(); });
+const delBook = id => run(async () => { if (confirm('Delete this book?')) { await api('/api/admin/books/' + id, { method: 'DELETE' }); booksPanel(); } });
+const uploadFile = (id, input) => run(async () => {
+  if (!input.files[0]) return;
+  const fd = new FormData(); fd.append('file', input.files[0]);
+  await api(`/api/admin/books/${id}/file`, { method: 'POST', body: fd }); toast('Uploaded'); booksPanel();
+});
+const openFile = id => run(async () => {
+  const r = await fetch(`/api/admin/books/${id}/file`, { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new Error('File not found');
+  window.open(URL.createObjectURL(await r.blob()), '_blank');
+});
+
+/* Students */
+async function studentsPanel() {
+  cache.students = await api('/api/admin/students');
+  $('#panel').innerHTML = `
+  <div class="card"><h3 id="st">Add student</h3><input type="hidden" id="sid">
+    <div class="grid"><input id="name" placeholder="Name"><input id="rollNo" placeholder="Roll no."><input id="email" placeholder="Email"><input id="phone" placeholder="Phone"></div>
+    <p><button onclick="saveStudent()">Save</button> <button class="sec" onclick="studentsPanel()">Clear</button></p></div>
+  <div class="card wrap"><table><tr><th>Name</th><th>Roll no.</th><th>Email</th><th>Phone</th><th>Actions</th></tr>
+  ${cache.students.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.rollNo)}</td><td>${esc(s.email)}</td><td>${esc(s.phone)}</td>
+    <td><button class="sm sec" onclick="editStudent(${s.id})">Edit</button><button class="sm danger" onclick="delStudent(${s.id})">Delete</button></td></tr>`).join('')}
+  </table></div>`;
+}
+function editStudent(id) {
+  const s = cache.students.find(x => x.id === id);
+  $('#st').textContent = 'Edit student'; $('#sid').value = s.id;
+  ['name','rollNo','email','phone'].forEach(k => $('#'+k).value = s[k] ?? '');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+const saveStudent = () => run(async () => {
+  const body = {}; ['name','rollNo','email','phone'].forEach(k => body[k] = $('#'+k).value);
+  if (!body.name.trim()) throw new Error('Name is required');
+  const id = $('#sid').value;
+  await api(id ? '/api/admin/students/' + id : '/api/admin/students', { method: id ? 'PUT' : 'POST', body });
+  toast('Saved'); studentsPanel();
+});
+const delStudent = id => run(async () => { if (confirm('Delete this student?')) { await api('/api/admin/students/' + id, { method: 'DELETE' }); studentsPanel(); } });
+
+/* Issue / Return */
+async function issuesPanel() {
+  const [books, students, issues] = await Promise.all([api('/api/admin/books'), api('/api/admin/students'), api('/api/admin/issues')]);
+  $('#panel').innerHTML = `
+  <div class="card"><h3>Issue a book</h3><div class="grid">
+    <select id="ib">${books.filter(b => b.quantity > 0).map(b => `<option value="${b.id}">${esc(b.title)} (${b.quantity})</option>`).join('')}</select>
+    <select id="is">${students.map(s => `<option value="${s.id}">${esc(s.name)} ${esc(s.rollNo)}</option>`).join('')}</select>
+    <input id="idays" type="number" value="14" min="1" placeholder="Days"></div>
+    <p><button onclick="issueBook()">Issue</button></p></div>
+  <div class="card wrap"><table><tr><th>Book</th><th>Student</th><th>Issued</th><th>Due</th><th>Returned</th><th>Fine</th><th></th></tr>
+  ${issues.slice().reverse().map(r => `<tr><td>${esc(r.bookTitle)}</td><td>${esc(r.studentName)}</td><td>${r.issueDate}</td><td>${r.dueDate}</td>
+    <td>${r.returnDate || '<span class="badge">Out</span>'}</td><td>${r.fine ? '₹' + r.fine : '-'}</td>
+    <td>${r.returnDate ? '' : `<button class="sm ok" onclick="returnBook(${r.id})">Return</button>`}<button class="sm danger" onclick="delIssue(${r.id})">Delete</button></td></tr>`).join('')}
+  </table></div>`;
+}
+const issueBook = () => run(async () => {
+  await api('/api/admin/issues', { method: 'POST', body: { bookId: +$('#ib').value, studentId: +$('#is').value, days: +$('#idays').value } });
+  toast('Book issued'); issuesPanel();
+});
+const returnBook = id => run(async () => {
+  const r = await api(`/api/admin/issues/${id}/return`, { method: 'POST' });
+  toast(r.fine ? 'Returned. Fine: ₹' + r.fine : 'Returned'); issuesPanel();
+});
+const delIssue = id => run(async () => { if (confirm('Delete record?')) { await api('/api/admin/issues/' + id, { method: 'DELETE' }); issuesPanel(); } });
+
+render();
+</script>
+</body>
+</html>
